@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(cargo build:*)",
-      "Bash(docker build:*)"
+      "Bash(docker build:*)",
+      "Bash(gh:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)"
     ]
   }
 }
