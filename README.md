@@ -5,22 +5,20 @@ Run Claude Code in a VNC Linux environment with web and Android clients.
 ## Quick Start
 
 ```bash
-# Setup Claude Code authentication
+# Get Claude Code OAuth token
 claude setup-token
 export CLAUDE_CODE_OAUTH_TOKEN=sk-...
 
 # Run
 ./run.sh
-
-# Access on port 8080 (via Tailscale)
 ```
+
+Open http://localhost:8080 in your browser.
 
 ## Prerequisites
 
-- Rust (via [rustup](https://rustup.rs/))
-- Linux environment (Arch Linux recommended)
-- Claude Code installed and authenticated
-- VNC client: noVNC (web) or bVNC (Android)
+- Docker
+- Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
 ## Building
 
