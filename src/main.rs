@@ -1,11 +1,15 @@
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
-    response::{Html, IntoResponse},
-    routing::get,
+    http::StatusCode,
+    response::{Html, IntoResponse, Json},
+    routing::{get, post},
     Router,
 };
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
+use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -14,6 +18,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::signal;
 use tokio::sync::Mutex;
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 
 struct AppState {
     display: u32,
@@ -22,6 +28,17 @@ struct AppState {
 struct Processes {
     vnc: Child,
     websockify: Child,
+}
+
+#[derive(Deserialize)]
+struct FontSizeRequest {
+    size: f32,
+}
+
+#[derive(Serialize)]
+struct FontSizeResponse {
+    success: bool,
+    message: String,
 }
 
 fn find_available_display() -> u32 {
@@ -217,6 +234,54 @@ async fn handle_prompt_socket(mut socket: WebSocket, state: Arc<AppState>) {
     println!("Prompt WebSocket disconnected");
 }
 
+async fn font_size_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<FontSizeRequest>,
+) -> Result<Json<FontSizeResponse>, (StatusCode, Json<FontSizeResponse>)> {
+    println!("Font size change request: {}", request.size);
+
+    // Validate the font size
+    let size = match validate_font_size(request.size) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(FontSizeResponse {
+                    success: false,
+                    message: e,
+                }),
+            ));
+        }
+    };
+
+    // Update the config file
+    if let Err(e) = update_alacritty_config(size) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(FontSizeResponse {
+                success: false,
+                message: e,
+            }),
+        ));
+    }
+
+    // Reload Alacritty
+    if let Err(e) = reload_alacritty(state.display) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(FontSizeResponse {
+                success: false,
+                message: format!("Config updated but reload failed: {}", e),
+            }),
+        ));
+    }
+
+    Ok(Json(FontSizeResponse {
+        success: true,
+        message: format!("Font size updated to {}", size),
+    }))
+}
+
 fn validate_args(args: &[String]) -> Result<(String, String, u16), String> {
     if args.len() < 2 {
         return Err("Usage: vnccc <repo-path> [geometry] [web-port]".to_string());
@@ -233,6 +298,74 @@ fn validate_args(args: &[String]) -> Result<(String, String, u16), String> {
     }
 
     Ok((repo_path, geometry, web_port))
+}
+
+fn validate_font_size(size: f32) -> Result<f32, String> {
+    if size < 8.0 || size > 72.0 {
+        return Err(format!("Font size must be between 8.0 and 72.0, got {}", size));
+    }
+    if !size.is_finite() {
+        return Err("Font size must be a valid number".to_string());
+    }
+    Ok(size)
+}
+
+fn update_alacritty_config(size: f32) -> Result<(), String> {
+    let home = env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let config_path = format!("{}/.config/alacritty/alacritty.toml", home);
+
+    // Read the current config
+    let mut file = fs::File::open(&config_path)
+        .map_err(|e| format!("Failed to open alacritty config: {}", e))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|e| format!("Failed to read alacritty config: {}", e))?;
+
+    // Parse as TOML
+    let mut config: toml::Value = toml::from_str(&contents)
+        .map_err(|e| format!("Failed to parse alacritty config: {}", e))?;
+
+    // Update the font size
+    if let Some(font) = config.get_mut("font") {
+        if let Some(font_table) = font.as_table_mut() {
+            font_table.insert("size".to_string(), toml::Value::Float(size as f64));
+        }
+    }
+
+    // Write back to file
+    let new_contents = toml::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let mut file = fs::File::create(&config_path)
+        .map_err(|e| format!("Failed to open config for writing: {}", e))?;
+    file.write_all(new_contents.as_bytes())
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(())
+}
+
+fn reload_alacritty(display: u32) -> Result<(), String> {
+    let display_env = format!(":{}", display);
+
+    // Find Alacritty window to get its PID
+    let output = Command::new("xdotool")
+        .env("DISPLAY", &display_env)
+        .args(["search", "--class", "Alacritty", "getwindowpid"])
+        .output()
+        .map_err(|e| format!("Failed to find Alacritty window: {}", e))?;
+
+    if !output.status.success() {
+        return Err("Alacritty window not found".to_string());
+    }
+
+    let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let pid: i32 = pid_str.parse()
+        .map_err(|_| format!("Invalid PID: {}", pid_str))?;
+
+    // Send SIGHUP to reload config
+    kill(Pid::from_raw(pid), Signal::SIGHUP)
+        .map_err(|e| format!("Failed to send SIGHUP to Alacritty: {}", e))?;
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -316,6 +449,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/prompt", get(prompt_ws_handler))
+        .route("/api/font-size", post(font_size_handler))
         .with_state(state);
 
     println!();
@@ -399,5 +533,34 @@ mod tests {
     fn test_find_available_display_returns_valid_number() {
         let display = find_available_display();
         assert!(display >= 1 && display < 100);
+    }
+
+    #[test]
+    fn test_validate_font_size_valid() {
+        assert_eq!(validate_font_size(12.0), Ok(12.0));
+        assert_eq!(validate_font_size(8.0), Ok(8.0));
+        assert_eq!(validate_font_size(72.0), Ok(72.0));
+        assert_eq!(validate_font_size(20.5), Ok(20.5));
+    }
+
+    #[test]
+    fn test_validate_font_size_too_small() {
+        let result = validate_font_size(7.9);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("between 8.0 and 72.0"));
+    }
+
+    #[test]
+    fn test_validate_font_size_too_large() {
+        let result = validate_font_size(72.1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("between 8.0 and 72.0"));
+    }
+
+    #[test]
+    fn test_validate_font_size_invalid() {
+        let result = validate_font_size(f32::NAN);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("valid number"));
     }
 }
