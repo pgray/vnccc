@@ -9,11 +9,16 @@ Run Claude Code in a VNC Linux environment with web and Android clients.
 claude setup-token
 export CLAUDE_CODE_OAUTH_TOKEN=sk-...
 
-# Run
+# Run (pulls latest image from GitHub Container Registry)
 ./run.sh
+
+# Or build locally for development
+./run.sh --build
 ```
 
 Open http://localhost:8080 in your browser.
+
+The script automatically pulls the latest published image from GHCR. Use `--build` to build from source instead.
 
 ## Prerequisites
 

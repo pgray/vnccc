@@ -85,7 +85,7 @@ Creates a user matching host UID/GID to avoid permission issues:
 ```
 
 The script:
-1. Builds the Docker image
+1. Pulls the latest image from GitHub Container Registry (or builds locally with --build)
 2. Mounts your repository and configs
 3. Starts the container with proper port mappings (8080, 6080)
 4. Preserves UID/GID for file permissions
@@ -201,7 +201,7 @@ These checks are enforced by CI and will fail the build if not passing. Always r
 │   └── index.html        # Web UI with noVNC and prompt interface
 ├── Dockerfile            # Multi-stage build with layer caching
 ├── entrypoint.sh         # User creation and config mounting
-├── run.sh                # Build and run helper script
+├── run.sh                # Pull and run helper script (--build for local builds)
 ├── alacritty.toml        # Terminal configuration
 ├── Cargo.toml            # Rust dependencies
 └── .github/workflows/    # CI for tests and Docker build

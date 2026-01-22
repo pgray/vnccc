@@ -1,13 +1,18 @@
 #!/bin/bash
 set -e
 
+BUILD_LOCAL=false
 RELEASE=false
 REPO_PATH="."
 DD=${DD:-it}
+IMAGE="ghcr.io/pgray/vnccc:main"
 
 # Parse args
 for arg in "$@"; do
     case $arg in
+        --build)
+            BUILD_LOCAL=true
+            ;;
         --release)
             RELEASE=true
             ;;
@@ -20,8 +25,14 @@ done
 # Resolve to absolute path
 REPO_PATH="$(cd "$REPO_PATH" && pwd)"
 
-echo "Building vnccc container (release=$RELEASE)..."
-docker build --build-arg RELEASE=$RELEASE -t vnccc .
+if [ "$BUILD_LOCAL" = true ]; then
+    echo "Building vnccc container locally (release=$RELEASE)..."
+    docker build --build-arg RELEASE=$RELEASE -t vnccc .
+    IMAGE="vnccc"
+else
+    echo "Pulling latest vnccc image from GHCR..."
+    docker pull "$IMAGE"
+fi
 
 echo "Starting vnccc with repo: $REPO_PATH"
 echo "Open http://localhost:8080 in your browser"
@@ -49,4 +60,4 @@ docker run "-${DD}" --rm \
     -e CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN}" \
     "${MOUNT_OPTS[@]}" \
     --name vnccc \
-    vnccc
+    "$IMAGE"
