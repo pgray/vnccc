@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>vnccc</title>
     <style>
         * {
@@ -15,14 +15,20 @@
             height: 100%;
             background: #1a1a1a;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            /* Prevent pull-to-refresh and overscroll */
+            overscroll-behavior: none;
         }
 
         .container {
             display: flex;
             flex-direction: column;
-            height: 100%;
+            height: 100vh;
+            height: 100dvh; /* Dynamic viewport height for mobile */
             max-width: 1024px;
             margin: 0 auto;
+            /* Safe area insets for notched devices */
+            padding-left: env(safe-area-inset-left);
+            padding-right: env(safe-area-inset-right);
         }
 
         .vnc-container {
@@ -32,18 +38,30 @@
             justify-content: center;
             overflow: hidden;
             background: #000;
+            /* Better touch handling */
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
         }
 
         #vnc-iframe {
             width: 100%;
             height: 100%;
             border: none;
+            /* Optimize touch handling for VNC */
+            touch-action: none;
         }
 
         .prompt-container {
             padding: 12px;
             background: #2a2a2a;
             border-top: 1px solid #444;
+            /* Safe area for bottom notch/home indicator */
+            padding-bottom: max(12px, env(safe-area-inset-bottom));
+            /* Prevent container from being hidden by keyboard */
+            position: relative;
+            z-index: 10;
         }
 
         .prompt-form {
@@ -53,13 +71,17 @@
 
         #prompt-input {
             flex: 1;
-            padding: 16px;
-            font-size: 18px;
+            padding: 12px 16px;
+            min-height: 44px; /* Minimum touch target */
+            font-size: 16px; /* Prevent iOS zoom on focus */
             border: 2px solid #444;
             border-radius: 8px;
             background: #1a1a1a;
             color: #fff;
             outline: none;
+            /* Improve mobile text input */
+            -webkit-appearance: none;
+            appearance: none;
         }
 
         #prompt-input:focus {
@@ -71,8 +93,10 @@
         }
 
         #send-btn {
-            padding: 16px 24px;
-            font-size: 18px;
+            padding: 12px 24px;
+            min-height: 44px; /* Minimum touch target */
+            min-width: 64px;
+            font-size: 16px;
             font-weight: 600;
             background: #6366f1;
             color: #fff;
@@ -80,6 +104,8 @@
             border-radius: 8px;
             cursor: pointer;
             transition: background 0.2s;
+            /* Better touch feedback */
+            -webkit-tap-highlight-color: rgba(99, 102, 241, 0.3);
         }
 
         #send-btn:hover {
@@ -98,8 +124,12 @@
         .status {
             text-align: center;
             padding: 8px;
-            font-size: 12px;
+            font-size: 13px;
             color: #666;
+            min-height: 32px; /* Ensure visibility */
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .status.connected {
@@ -110,15 +140,78 @@
             color: #ef4444;
         }
 
+        /* Tablet breakpoint */
+        @media (max-width: 768px) {
+            .container {
+                max-width: 100%;
+            }
+
+            .prompt-form {
+                gap: 6px;
+            }
+        }
+
+        /* Mobile breakpoint */
         @media (max-width: 600px) {
+            .prompt-container {
+                padding: 10px;
+                padding-bottom: max(10px, env(safe-area-inset-bottom));
+            }
+
+            .prompt-form {
+                gap: 6px;
+            }
+
             #prompt-input {
-                font-size: 16px;
-                padding: 14px;
+                font-size: 16px; /* Prevents zoom on iOS */
+                padding: 12px 14px;
             }
 
             #send-btn {
-                padding: 14px 20px;
+                padding: 12px 16px;
                 font-size: 16px;
+                min-width: 56px;
+            }
+
+            .status {
+                font-size: 12px;
+                padding: 6px;
+            }
+        }
+
+        /* Small mobile breakpoint */
+        @media (max-width: 375px) {
+            .prompt-form {
+                gap: 4px;
+            }
+
+            #send-btn {
+                padding: 12px;
+                min-width: 50px;
+            }
+        }
+
+        /* Landscape mobile optimization */
+        @media (max-height: 500px) and (orientation: landscape) {
+            .prompt-container {
+                padding: 8px;
+                padding-bottom: max(8px, env(safe-area-inset-bottom));
+            }
+
+            #prompt-input {
+                padding: 8px 12px;
+                min-height: 40px;
+            }
+
+            #send-btn {
+                padding: 8px 16px;
+                min-height: 40px;
+            }
+
+            .status {
+                padding: 4px;
+                min-height: 24px;
+                font-size: 11px;
             }
         }
     </style>
@@ -155,6 +248,37 @@
 
         let ws = null;
         let reconnectTimer = null;
+
+        // Handle keyboard visibility on mobile
+        function setupKeyboardHandling() {
+            if (!window.visualViewport) return;
+
+            const container = document.querySelector('.container');
+            const vncContainer = document.querySelector('.vnc-container');
+
+            function handleViewportResize() {
+                // Detect if keyboard is open (viewport height significantly reduced)
+                const viewportHeight = window.visualViewport.height;
+                const windowHeight = window.innerHeight;
+                const keyboardVisible = windowHeight - viewportHeight > 150;
+
+                if (keyboardVisible) {
+                    // Keyboard is visible - adjust layout
+                    container.style.height = `${viewportHeight}px`;
+                    vncContainer.style.minHeight = '0';
+                } else {
+                    // Keyboard hidden - restore layout
+                    container.style.height = '';
+                    vncContainer.style.minHeight = '';
+                }
+            }
+
+            window.visualViewport.addEventListener('resize', handleViewportResize);
+            window.visualViewport.addEventListener('scroll', handleViewportResize);
+        }
+
+        // Initialize keyboard handling
+        setupKeyboardHandling();
 
         function connect() {
             const wsUrl = `ws://${window.location.host}/prompt`;
