@@ -46,6 +46,10 @@ cargo build --release
 - **Web client**: noVNC
 - **Automation**: Rust + Bash
 
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
-TBD
+MIT License - see [LICENSE](LICENSE) for details.
