@@ -93,7 +93,7 @@ fn find_terminal() -> &'static str {
 
 fn start_terminal_with_claude(display: u32, repo_path: &str, terminal: &str, geometry: &str) -> Child {
     let display_env = format!(":{}", display);
-    let claude_cmd = format!("cd {} && claude", repo_path);
+    let claude_cmd = format!("cd {} && claude --dangerously-skip-permissions", repo_path);
 
     let mut cmd = Command::new(terminal);
     cmd.env("DISPLAY", &display_env);
