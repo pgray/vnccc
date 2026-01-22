@@ -18,8 +18,6 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::signal;
 use tokio::sync::Mutex;
-use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
 
 struct AppState {
     display: u32,
@@ -255,23 +253,13 @@ async fn font_size_handler(
     };
 
     // Update the config file
+    // Alacritty will automatically reload the config when the file changes (live_config_reload)
     if let Err(e) = update_alacritty_config(size) {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(FontSizeResponse {
                 success: false,
                 message: e,
-            }),
-        ));
-    }
-
-    // Reload Alacritty
-    if let Err(e) = reload_alacritty(state.display) {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(FontSizeResponse {
-                success: false,
-                message: format!("Config updated but reload failed: {}", e),
             }),
         ));
     }
@@ -339,31 +327,6 @@ fn update_alacritty_config(size: f32) -> Result<(), String> {
         .map_err(|e| format!("Failed to open config for writing: {}", e))?;
     file.write_all(new_contents.as_bytes())
         .map_err(|e| format!("Failed to write config: {}", e))?;
-
-    Ok(())
-}
-
-fn reload_alacritty(display: u32) -> Result<(), String> {
-    let display_env = format!(":{}", display);
-
-    // Find Alacritty window to get its PID
-    let output = Command::new("xdotool")
-        .env("DISPLAY", &display_env)
-        .args(["search", "--class", "Alacritty", "getwindowpid"])
-        .output()
-        .map_err(|e| format!("Failed to find Alacritty window: {}", e))?;
-
-    if !output.status.success() {
-        return Err("Alacritty window not found".to_string());
-    }
-
-    let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let pid: i32 = pid_str.parse()
-        .map_err(|_| format!("Invalid PID: {}", pid_str))?;
-
-    // Send SIGHUP to reload config
-    kill(Pid::from_raw(pid), Signal::SIGHUP)
-        .map_err(|e| format!("Failed to send SIGHUP to Alacritty: {}", e))?;
 
     Ok(())
 }
