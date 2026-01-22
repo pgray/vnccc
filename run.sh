@@ -3,6 +3,7 @@ set -e
 
 RELEASE=false
 REPO_PATH="."
+DD=${DD:-it}
 
 # Parse args
 for arg in "$@"; do
@@ -39,7 +40,7 @@ MOUNT_OPTS+=(-v "$REPO_PATH:/repo:rw")
 
 echo "Mount options: ${MOUNT_OPTS[@]}"
 
-docker run -it --rm \
+docker run "-${DD}" --rm \
     -p 8080:8080 \
     -p 6080:6080 \
     -e HOST_UID="$(id -u)" \

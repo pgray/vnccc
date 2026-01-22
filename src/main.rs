@@ -1,11 +1,15 @@
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
-    response::{Html, IntoResponse},
-    routing::get,
+    http::StatusCode,
+    response::{Html, IntoResponse, Json},
+    routing::{get, post},
     Router,
 };
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
+use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -22,6 +26,17 @@ struct AppState {
 struct Processes {
     vnc: Child,
     websockify: Child,
+}
+
+#[derive(Deserialize)]
+struct FontSizeRequest {
+    size: f32,
+}
+
+#[derive(Serialize)]
+struct FontSizeResponse {
+    success: bool,
+    message: String,
 }
 
 fn find_available_display() -> u32 {
@@ -93,7 +108,7 @@ fn find_terminal() -> &'static str {
 
 fn start_terminal_with_claude(display: u32, repo_path: &str, terminal: &str, geometry: &str) -> Child {
     let display_env = format!(":{}", display);
-    let claude_cmd = format!("cd {} && claude", repo_path);
+    let claude_cmd = format!("cd {} && claude --dangerously-skip-permissions", repo_path);
 
     let mut cmd = Command::new(terminal);
     cmd.env("DISPLAY", &display_env);
@@ -217,31 +232,124 @@ async fn handle_prompt_socket(mut socket: WebSocket, state: Arc<AppState>) {
     println!("Prompt WebSocket disconnected");
 }
 
+async fn font_size_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<FontSizeRequest>,
+) -> Result<Json<FontSizeResponse>, (StatusCode, Json<FontSizeResponse>)> {
+    println!("Font size change request: {}", request.size);
+
+    // Validate the font size
+    let size = match validate_font_size(request.size) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(FontSizeResponse {
+                    success: false,
+                    message: e,
+                }),
+            ));
+        }
+    };
+
+    // Update the config file
+    // Alacritty will automatically reload the config when the file changes (live_config_reload)
+    if let Err(e) = update_alacritty_config(size) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(FontSizeResponse {
+                success: false,
+                message: e,
+            }),
+        ));
+    }
+
+    Ok(Json(FontSizeResponse {
+        success: true,
+        message: format!("Font size updated to {}", size),
+    }))
+}
+
+fn validate_args(args: &[String]) -> Result<(String, String, u16), String> {
+    if args.len() < 2 {
+        return Err("Usage: vnccc <repo-path> [geometry] [web-port]".to_string());
+    }
+
+    let repo_path = args[1].clone();
+    let geometry = args.get(2).map(|s| s.as_str()).unwrap_or("1024x1024").to_string();
+    let web_port: u16 = args.get(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+
+    if !Path::new(&repo_path).exists() {
+        return Err(format!("Error: repo path '{}' does not exist", repo_path));
+    }
+
+    Ok((repo_path, geometry, web_port))
+}
+
+fn validate_font_size(size: f32) -> Result<f32, String> {
+    if size < 8.0 || size > 72.0 {
+        return Err(format!("Font size must be between 8.0 and 72.0, got {}", size));
+    }
+    if !size.is_finite() {
+        return Err("Font size must be a valid number".to_string());
+    }
+    Ok(size)
+}
+
+fn update_alacritty_config(size: f32) -> Result<(), String> {
+    let home = env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let config_path = format!("{}/.config/alacritty/alacritty.toml", home);
+
+    // Read the current config
+    let mut file = fs::File::open(&config_path)
+        .map_err(|e| format!("Failed to open alacritty config: {}", e))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|e| format!("Failed to read alacritty config: {}", e))?;
+
+    // Parse as TOML
+    let mut config: toml::Value = toml::from_str(&contents)
+        .map_err(|e| format!("Failed to parse alacritty config: {}", e))?;
+
+    // Update the font size
+    if let Some(font) = config.get_mut("font") {
+        if let Some(font_table) = font.as_table_mut() {
+            font_table.insert("size".to_string(), toml::Value::Float(size as f64));
+        }
+    }
+
+    // Write back to file
+    let new_contents = toml::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let mut file = fs::File::create(&config_path)
+        .map_err(|e| format!("Failed to open config for writing: {}", e))?;
+    file.write_all(new_contents.as_bytes())
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 2 {
-        eprintln!("Usage: vnccc <repo-path> [geometry] [web-port]");
-        eprintln!("Example: vnccc /home/user/myproject 1024x1024 8080");
-        std::process::exit(1);
-    }
-
-    let repo_path = args[1].clone();
-    let geometry = args.get(2).map(|s| s.as_str()).unwrap_or("1024x1024");
-    let web_port: u16 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(8080);
-
-    if !Path::new(&repo_path).exists() {
-        eprintln!("Error: repo path '{}' does not exist", repo_path);
-        std::process::exit(1);
-    }
+    let (repo_path, geometry, web_port) = match validate_args(&args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{}", e);
+            eprintln!("Example: vnccc /home/user/myproject 1024x1024 8080");
+            std::process::exit(1);
+        }
+    };
 
     let display = find_available_display();
     let vnc_port = 5900 + display;
     let ws_port = 6080; // websockify port for noVNC
 
     println!("Starting VNC on display :{} (port {})", display, vnc_port);
-    let mut vnc_proc = start_vnc_server(display, geometry);
+    let mut vnc_proc = start_vnc_server(display, &geometry);
 
     thread::sleep(Duration::from_millis(500));
 
@@ -304,6 +412,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/prompt", get(prompt_ws_handler))
+        .route("/api/font-size", post(font_size_handler))
         .with_state(state);
 
     println!();
@@ -328,4 +437,93 @@ async fn main() {
         })
         .await
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_terminal() {
+        assert_eq!(find_terminal(), "alacritty");
+    }
+
+    #[test]
+    fn test_validate_args_missing_repo_path() {
+        let args = vec!["vnccc".to_string()];
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Usage"));
+    }
+
+    #[test]
+    fn test_validate_args_with_defaults() {
+        let temp_dir = std::env::temp_dir();
+        let args = vec!["vnccc".to_string(), temp_dir.to_str().unwrap().to_string()];
+        let result = validate_args(&args);
+        assert!(result.is_ok());
+        let (repo_path, geometry, web_port) = result.unwrap();
+        assert_eq!(repo_path, temp_dir.to_str().unwrap());
+        assert_eq!(geometry, "1024x1024");
+        assert_eq!(web_port, 8080);
+    }
+
+    #[test]
+    fn test_validate_args_with_custom_values() {
+        let temp_dir = std::env::temp_dir();
+        let args = vec![
+            "vnccc".to_string(),
+            temp_dir.to_str().unwrap().to_string(),
+            "800x600".to_string(),
+            "9090".to_string(),
+        ];
+        let result = validate_args(&args);
+        assert!(result.is_ok());
+        let (_, geometry, web_port) = result.unwrap();
+        assert_eq!(geometry, "800x600");
+        assert_eq!(web_port, 9090);
+    }
+
+    #[test]
+    fn test_validate_args_nonexistent_path() {
+        let args = vec!["vnccc".to_string(), "/nonexistent/path/12345".to_string()];
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_find_available_display_returns_valid_number() {
+        let display = find_available_display();
+        assert!(display >= 1 && display < 100);
+    }
+
+    #[test]
+    fn test_validate_font_size_valid() {
+        assert_eq!(validate_font_size(12.0), Ok(12.0));
+        assert_eq!(validate_font_size(8.0), Ok(8.0));
+        assert_eq!(validate_font_size(72.0), Ok(72.0));
+        assert_eq!(validate_font_size(20.5), Ok(20.5));
+    }
+
+    #[test]
+    fn test_validate_font_size_too_small() {
+        let result = validate_font_size(7.9);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("between 8.0 and 72.0"));
+    }
+
+    #[test]
+    fn test_validate_font_size_too_large() {
+        let result = validate_font_size(72.1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("between 8.0 and 72.0"));
+    }
+
+    #[test]
+    fn test_validate_font_size_invalid() {
+        let result = validate_font_size(f32::NAN);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("valid number"));
+    }
 }
