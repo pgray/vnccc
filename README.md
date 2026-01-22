@@ -20,6 +20,27 @@ Open http://localhost:8080 in your browser.
 - Docker
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
+## Configuration
+
+The container automatically mounts your host configurations:
+
+- **Git**: `.gitconfig` (for commits)
+- **GitHub CLI**: `.config/gh/` (for `gh pr create`, `gh issue`, etc.)
+- **SSH**: `.ssh/` (for git push over SSH)
+- **Claude**: `.claude/` and `.config/claude/` (settings and session data)
+
+To enable GitHub operations inside the container:
+
+```bash
+# Authenticate gh CLI on your host
+gh auth login
+
+# Your credentials will be available in the container
+./run.sh
+```
+
+Inside the container, Claude Code can now create PRs, commit, and push.
+
 ## Building
 
 ```bash
