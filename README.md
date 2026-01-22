@@ -54,16 +54,34 @@ cargo build --release
 - Mobile-friendly with swype keyboard support
 - Square display aspect ratio for Android
 - Per-repository configuration
-- Tailscale or Wireguard networking
-- Session persistence with tmux
+- Dynamic font size adjustment from browser
+- Automatic terminal restart on exit
 
 ## Architecture
 
 - **Display**: TigerVNC + X11
 - **Terminal**: Alacritty
-- **Network**: Tailscale or Wireguard
 - **Web client**: noVNC
-- **Automation**: Rust + Bash
+- **Web server**: Axum (Rust)
+- **Automation**: xdotool + Bash
+
+## Remote Access
+
+To access vnccc from other devices, use Tailscale on your host machine:
+
+```bash
+# Install and setup Tailscale on host
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up
+
+# Run vnccc
+./run.sh
+
+# Access from any device on your tailnet
+http://[tailscale-ip]:8080
+```
+
+The container uses host networking, so Tailscale running on the host provides secure remote access.
 
 ## Contributing
 
