@@ -2,6 +2,15 @@
 
 vnccc is a program for running Claude Code in a VNC Linux environment with nice web and Android clients.
 
+## INSTALL/SETUP
+```
+claude setup-token
+# add to your bashrc via
+export CLAUDE_CODE_OAUTH_TOKEN=sk-.....
+./run.sh
+# access over tailscale on port 8080
+```
+
 ## Architecture
 
 - Claude Code

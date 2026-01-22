@@ -77,6 +77,16 @@ fn start_websockify(vnc_port: u32, ws_port: u32) -> Child {
         .expect("Failed to start websockify. Install novnc.")
 }
 
+fn start_window_manager(display: u32) -> Child {
+    let display_env = format!(":{}", display);
+    Command::new("ratpoison")
+        .env("DISPLAY", &display_env)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to start ratpoison window manager")
+}
+
 fn find_terminal() -> &'static str {
     "alacritty"
 }
@@ -87,6 +97,16 @@ fn start_terminal_with_claude(display: u32, repo_path: &str, terminal: &str, geo
 
     let mut cmd = Command::new(terminal);
     cmd.env("DISPLAY", &display_env);
+
+    // Pass through important env vars
+    // TODO: CLAUDE_CODE_OAUTH_TOKEN
+    if let Ok(claude_dir) = env::var("CLAUDE_CONFIG_DIR") {
+        println!("Passing CLAUDE_CONFIG_DIR={} to terminal", claude_dir);
+        cmd.env("CLAUDE_CONFIG_DIR", &claude_dir);
+    }
+    if let Ok(home) = env::var("HOME") {
+        cmd.env("HOME", &home);
+    }
 
     match terminal {
         "wezterm" => {
@@ -122,20 +142,55 @@ fn start_terminal_with_claude(display: u32, repo_path: &str, terminal: &str, geo
     cmd.spawn().expect("Failed to start terminal")
 }
 
-fn send_text_to_display(display: u32, text: &str) {
-    // Use xdotool to type text into the focused window on the display
+async fn send_text_to_display(display: u32, text: &str) {
     let display_env = format!(":{}", display);
 
+    println!("Sending text to display :{} - '{}'", display, text);
+
+    // Retry finding the window a few times in case terminal is restarting
+    let mut focus_ok = false;
+    for attempt in 0..10 {
+        let output = Command::new("xdotool")
+            .env("DISPLAY", &display_env)
+            .args(["search", "--class", "Alacritty"])
+            .output();
+
+        if let Ok(out) = &output {
+            if !out.stdout.is_empty() {
+                // Window found, now focus it
+                let focus_result = Command::new("xdotool")
+                    .env("DISPLAY", &display_env)
+                    .args(["search", "--class", "Alacritty", "windowfocus", "--sync"])
+                    .status();
+                println!("xdotool focus result (attempt {}): {:?}", attempt, focus_result);
+                focus_ok = focus_result.map(|s| s.success()).unwrap_or(false);
+                if focus_ok {
+                    break;
+                }
+            }
+        }
+
+        println!("Window not found, retrying... (attempt {})", attempt);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    if !focus_ok {
+        println!("Failed to focus terminal window after retries");
+        return;
+    }
+
     // Type the text and press Enter
-    let _ = Command::new("xdotool")
+    let type_result = Command::new("xdotool")
         .env("DISPLAY", &display_env)
         .args(["type", "--clearmodifiers", text])
         .status();
+    println!("xdotool type result: {:?}", type_result);
 
-    let _ = Command::new("xdotool")
+    let key_result = Command::new("xdotool")
         .env("DISPLAY", &display_env)
         .args(["key", "Return"])
         .status();
+    println!("xdotool key result: {:?}", key_result);
 }
 
 async fn index_handler() -> Html<&'static str> {
@@ -151,12 +206,15 @@ async fn prompt_ws_handler(
 
 async fn handle_prompt_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let display = state.display;
+    println!("Prompt WebSocket connected");
     while let Some(msg) = socket.next().await {
+        println!("WebSocket received: {:?}", msg);
         if let Ok(Message::Text(text)) = msg {
             // Use xdotool to type into the X display
-            send_text_to_display(display, &text);
+            send_text_to_display(display, &text).await;
         }
     }
+    println!("Prompt WebSocket disconnected");
 }
 
 #[tokio::main]
@@ -203,6 +261,10 @@ async fn main() {
     let websockify_proc = start_websockify(vnc_port, ws_port);
 
     thread::sleep(Duration::from_millis(300));
+
+    println!("Starting ratpoison window manager");
+    let _wm_proc = start_window_manager(display);
+    thread::sleep(Duration::from_millis(200));
 
     let terminal = find_terminal();
     println!("Starting {} with claude in {}", terminal, repo_path);

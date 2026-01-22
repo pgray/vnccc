@@ -1,4 +1,4 @@
-FROM debian:trixie-slim
+FROM rust:1-slim-trixie
 
 # Install system dependencies (rarely changes - cached)
 RUN apt-get update && apt-get install -y \
@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     novnc \
     websockify \
     xdotool \
+    ratpoison \
     alacritty \
     curl \
     build-essential \
@@ -18,17 +19,18 @@ RUN apt-get update && apt-get install -y \
     libegl1 \
     libgl1 \
     libgl1-mesa-dri \
+    bat \
+    fd-find \
+    ripgrep \
+    gh \
     && rm -rf /var/lib/apt/lists/*
 
+ENV PATH="/root/.cargo/bin:${PATH}"
 # Install Node.js and Claude Code (rarely changes - cached)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
-
-# Setup Rust (rarely changes - cached)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /app
 
@@ -47,6 +49,7 @@ RUN if [ "$RELEASE" = "true" ]; then \
 # Now copy actual source (this layer rebuilds on code changes)
 COPY src /app/src
 COPY alacritty.toml /app/
+COPY entrypoint.sh /app/
 
 # Build actual binary (only recompiles vnccc, deps cached)
 RUN if [ "$RELEASE" = "true" ]; then \
@@ -59,11 +62,7 @@ RUN if [ "$RELEASE" = "true" ]; then \
         cp target/debug/vnccc target/vnccc; \
     fi
 
-# Setup alacritty config
-RUN mkdir -p /root/.config/alacritty && \
-    cp /app/alacritty.toml /root/.config/alacritty/alacritty.toml
-
-WORKDIR /root
+RUN chmod +x /app/entrypoint.sh
 
 # Expose ports: 8080 (web UI), 6080 (noVNC websocket)
 EXPOSE 8080 6080
@@ -72,5 +71,5 @@ EXPOSE 8080 6080
 ENV LIBGL_ALWAYS_SOFTWARE=1
 
 # Default: run vnccc pointing to a mounted repo
-ENTRYPOINT ["/app/target/vnccc"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/repo", "1920x1920", "8080"]

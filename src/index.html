@@ -188,7 +188,8 @@
 
             ws.send(text);
             promptInput.value = '';
-            promptInput.focus();
+            // Return focus to VNC iframe after sending prompt
+            vncIframe.focus();
         });
 
         // Set VNC iframe URL based on current host
@@ -199,8 +200,10 @@
         // Start connection
         connect();
 
-        // Focus input on load
-        promptInput.focus();
+        // Focus VNC iframe on load - only focus prompt input when user clicks it
+        vncIframe.addEventListener('load', () => {
+            vncIframe.focus();
+        });
     </script>
 </body>
 </html>

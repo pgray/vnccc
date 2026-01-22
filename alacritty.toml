@@ -1,6 +1,5 @@
 [window]
 decorations = "None"
-startup_mode = "Maximized"
 padding = { x = 4, y = 4 }
 
 [font]
