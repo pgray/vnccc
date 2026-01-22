@@ -217,31 +217,43 @@ async fn handle_prompt_socket(mut socket: WebSocket, state: Arc<AppState>) {
     println!("Prompt WebSocket disconnected");
 }
 
+fn validate_args(args: &[String]) -> Result<(String, String, u16), String> {
+    if args.len() < 2 {
+        return Err("Usage: vnccc <repo-path> [geometry] [web-port]".to_string());
+    }
+
+    let repo_path = args[1].clone();
+    let geometry = args.get(2).map(|s| s.as_str()).unwrap_or("1024x1024").to_string();
+    let web_port: u16 = args.get(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+
+    if !Path::new(&repo_path).exists() {
+        return Err(format!("Error: repo path '{}' does not exist", repo_path));
+    }
+
+    Ok((repo_path, geometry, web_port))
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 2 {
-        eprintln!("Usage: vnccc <repo-path> [geometry] [web-port]");
-        eprintln!("Example: vnccc /home/user/myproject 1024x1024 8080");
-        std::process::exit(1);
-    }
-
-    let repo_path = args[1].clone();
-    let geometry = args.get(2).map(|s| s.as_str()).unwrap_or("1024x1024");
-    let web_port: u16 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(8080);
-
-    if !Path::new(&repo_path).exists() {
-        eprintln!("Error: repo path '{}' does not exist", repo_path);
-        std::process::exit(1);
-    }
+    let (repo_path, geometry, web_port) = match validate_args(&args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{}", e);
+            eprintln!("Example: vnccc /home/user/myproject 1024x1024 8080");
+            std::process::exit(1);
+        }
+    };
 
     let display = find_available_display();
     let vnc_port = 5900 + display;
     let ws_port = 6080; // websockify port for noVNC
 
     println!("Starting VNC on display :{} (port {})", display, vnc_port);
-    let mut vnc_proc = start_vnc_server(display, geometry);
+    let mut vnc_proc = start_vnc_server(display, &geometry);
 
     thread::sleep(Duration::from_millis(500));
 
@@ -328,4 +340,64 @@ async fn main() {
         })
         .await
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_terminal() {
+        assert_eq!(find_terminal(), "alacritty");
+    }
+
+    #[test]
+    fn test_validate_args_missing_repo_path() {
+        let args = vec!["vnccc".to_string()];
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Usage"));
+    }
+
+    #[test]
+    fn test_validate_args_with_defaults() {
+        let temp_dir = std::env::temp_dir();
+        let args = vec!["vnccc".to_string(), temp_dir.to_str().unwrap().to_string()];
+        let result = validate_args(&args);
+        assert!(result.is_ok());
+        let (repo_path, geometry, web_port) = result.unwrap();
+        assert_eq!(repo_path, temp_dir.to_str().unwrap());
+        assert_eq!(geometry, "1024x1024");
+        assert_eq!(web_port, 8080);
+    }
+
+    #[test]
+    fn test_validate_args_with_custom_values() {
+        let temp_dir = std::env::temp_dir();
+        let args = vec![
+            "vnccc".to_string(),
+            temp_dir.to_str().unwrap().to_string(),
+            "800x600".to_string(),
+            "9090".to_string(),
+        ];
+        let result = validate_args(&args);
+        assert!(result.is_ok());
+        let (_, geometry, web_port) = result.unwrap();
+        assert_eq!(geometry, "800x600");
+        assert_eq!(web_port, 9090);
+    }
+
+    #[test]
+    fn test_validate_args_nonexistent_path() {
+        let args = vec!["vnccc".to_string(), "/nonexistent/path/12345".to_string()];
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_find_available_display_returns_valid_number() {
+        let display = find_available_display();
+        assert!(display >= 1 && display < 100);
+    }
 }
